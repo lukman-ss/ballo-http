@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -192,4 +193,18 @@ func Adapt(h Handler) http.HandlerFunc {
 		}
 		resp.Write(w)
 	}
+}
+
+// MethodNotAllowed returns a 405 Response with Allow header.
+func MethodNotAllowed(allowed ...string) (*Response, error) {
+	r := newResponse(http.StatusMethodNotAllowed, nil)
+	if len(allowed) > 0 {
+		r.Headers.Set("Allow", strings.Join(allowed, ", "))
+	}
+	return r, nil
+}
+
+// NotFound returns a 404 Response.
+func NotFound() (*Response, error) {
+	return Error(http.StatusNotFound, "not found")
 }
