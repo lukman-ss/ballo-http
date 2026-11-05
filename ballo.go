@@ -3,9 +3,11 @@
 package ballo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -17,6 +19,9 @@ const (
 	paramsKey contextKey = iota
 	requestIDKey
 )
+
+// MaxJSONBodySize limits JSON decode requests to 1MiB by default.
+const MaxJSONBodySize int64 = 1 << 20
 
 // Handler is the core function type processed by the middleware chain.
 type Handler func(*Request) (*Response, error)
@@ -85,9 +90,44 @@ func (r *Request) Header(key string) string {
 }
 
 // DecodeJSON decodes the JSON request body into v.
-func (r *Request) DecodeJSON(v any) error {
+// A caller-specified limit may be passed as the second argument;
+// when omitted or <= 0, MaxJSONBodySize is used.
+func (r *Request) DecodeJSON(v any, limit ...int64) error {
 	defer r.raw.Body.Close()
-	return json.NewDecoder(r.raw.Body).Decode(v)
+	max := MaxJSONBodySize
+	if len(limit) > 0 && limit[0] > 0 {
+		max = limit[0]
+	}
+	if r.raw.ContentLength == 0 {
+		return fmt.Errorf("ballo: empty request body")
+	}
+	if ct := r.raw.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		return fmt.Errorf("ballo: unsupported content type")
+	}
+	// Read body up to max+1 to detect overflow and trailing data reliably
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.raw.Body, max+1))
+	if err != nil {
+		return fmt.Errorf("ballo: read body: %w", err)
+	}
+	if int64(len(bodyBytes)) > max {
+		return fmt.Errorf("ballo: request body too large")
+	}
+	if len(bodyBytes) == 0 {
+		return fmt.Errorf("ballo: empty request body")
+	}
+	dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("ballo: decode json: %w", err)
+	}
+	// Ensure only a single JSON value exists (reject trailing content)
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("ballo: decode json: unexpected trailing data")
+		}
+		return fmt.Errorf("ballo: decode json: %w", err)
+	}
+	return nil
 }
 
 // Method returns the HTTP method of the request.
@@ -180,7 +220,7 @@ func Error(code int, message string) (*Response, error) {
 // ─── ServeHTTP adapter ────────────────────────────────────────────────────────
 
 // Adapt converts a Handler into a standard http.HandlerFunc.
-// On handler error it writes a 500 JSON body; on nil Response it writes 200.
+// On handler error it writes a 500 JSON body; on nil Response it writes 204 No Content.
 func Adapt(h Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req := NewRequest(r)
@@ -189,9 +229,11 @@ func Adapt(h Handler) http.HandlerFunc {
 			resp, _ = Error(http.StatusInternalServerError, "internal server error")
 		}
 		if resp == nil {
-			resp = newResponse(http.StatusOK, nil)
+			resp, _ = NoContent()
 		}
-		resp.Write(w)
+		if resp != nil {
+			resp.Write(w)
+		}
 	}
 }
 

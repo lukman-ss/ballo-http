@@ -57,7 +57,7 @@ h := ballo.Chain(myHandler, ballo.Recovery(), ballo.RequestID(), ballo.Logger())
 
 ### `Adapt(h Handler) http.HandlerFunc`
 
-Bridges a `Handler` into the standard `net/http` ecosystem. On handler error → 500 JSON. On nil response → 200 empty body.
+Bridges a `Handler` into the standard `net/http` ecosystem. On handler error → 500 JSON. On nil response → 204 No Content.
 
 ---
 
@@ -65,11 +65,11 @@ Bridges a `Handler` into the standard `net/http` ecosystem. On handler error →
 
 | Method | Description |
 |--------|-------------|
-| `Param(key string) string` | Path parameter set by the router via `WithParams`. |
+| `Param(key string) string` | Path parameter set by the router via `WithParams`. Returns empty string when absent. |
 | `Query(key string) string` | First query-string value for key. |
 | `QueryAll(key string) []string` | All query-string values for key. |
 | `Header(key string) string` | First request header value for key. |
-| `DecodeJSON(v any) error` | Decodes JSON body into v and closes the body. |
+| `DecodeJSON(v any) error` | Decodes JSON body into v, closes the body. Returns error for empty body (>1MiB), or invalid JSON. |
 | `Method() string` | HTTP method. |
 | `Path() string` | URL path. |
 | `Context() context.Context` | Active context. |
@@ -84,6 +84,18 @@ Set by a router layer (or tests) via the package-level helper:
 r = ballo.WithParams(r, map[string]string{"id": "42"})
 id := r.Param("id") // "42"
 ```
+
+#### JSON Body Limits
+
+`DecodeJSON(v, limit)` decodes JSON into `v`. An optional `limit` (in bytes) may be passed as the second argument; when omitted or non-positive, `MaxJSONBodySize` (1MiB) is used.
+
+Returns clear errors:
+
+- `ballo: empty request body` — no content
+- `ballo: unsupported content type` — body Content-Type is not `application/json`
+- `ballo: request body too large` — exceeds the configured limit (default or custom)
+- `ballo: decode json: unexpected trailing data` — more than one JSON value in the body
+- `ballo: decode json: ...` — parse failure
 
 ---
 
@@ -122,6 +134,7 @@ Catches any downstream `panic`, logs it with `slog.Error`, and returns HTTP 500 
 - Reads `X-Request-ID` from the incoming request; generates a UUID v4 if absent.
 - Stores the ID in the request context — retrieve with `RequestIDFromContext(ctx)`.
 - Echoes the ID in the `X-Request-ID` response header.
+- On `crypto/rand` failure, returns the error (propagated) to avoid generating empty or weak IDs.
 
 ```go
 id := ballo.RequestIDFromContext(r.Context())
@@ -144,6 +157,7 @@ Fields: `method`, `path`, `status`, `latency`, `request_id`.
 ```bash
 go test -v -race ./...
 go vet ./...
+gofmt -l *.go
 ```
 
 ## License

@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+// readRand allows injection for testing crypto/rand failures.
+var readRand = rand.Read
+
+// ─── Test helpers ─────────────────────────────────────────────────────────────
+
+// resetRandReader restores rand.Read after test injection.
+func resetRandReader() { readRand = rand.Read }
+
+// injectReadRand allows test injection of rand.Read.
+func injectReadRand(f func([]byte) (int, error)) { readRand = f }
+
 // ─── Recovery ────────────────────────────────────────────────────────────────
 
 // Recovery catches panics in downstream handlers, logs the error safely
@@ -35,8 +46,12 @@ func RequestID() Middleware {
 	return func(next Handler) Handler {
 		return func(r *Request) (*Response, error) {
 			id := r.Header("X-Request-ID")
+			var err error
 			if id == "" {
-				id = newRequestID()
+				id, err = newRequestID()
+				if err != nil {
+					return nil, fmt.Errorf("ballo: generate request id: %w", err)
+				}
 			}
 			ctx := context.WithValue(r.ctx, requestIDKey, id)
 			r = r.WithContext(ctx)
@@ -57,13 +72,20 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 // newRequestID generates a random UUID v4 string using crypto/rand.
-func newRequestID() string {
+// Returns error on crypto/rand failure.
+func newRequestID() (string, error) {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
+	n, err := readRand(b[:])
+	if n != 16 || err != nil {
+		if err == nil {
+			err = fmt.Errorf("crypto/rand: expected 16 bytes, got %d", n)
+		}
+		return "", err
+	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant bits
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // ─── Logger ──────────────────────────────────────────────────────────────────

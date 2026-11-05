@@ -37,12 +37,46 @@ func TestRequest_Query(t *testing.T) {
 	}
 }
 
-func TestRequest_Header(t *testing.T) {
-	raw, _ := http.NewRequest(http.MethodGet, "/", nil)
-	raw.Header.Set("X-Custom", "hello")
+func TestRequest_DecodeJSON_BodyTooLarge(t *testing.T) {
+	body := strings.Repeat("x", int(MaxJSONBodySize)+1)
+	r := newTestRequest(http.MethodPost, "/", strings.NewReader(body))
+	var v any
+	if err := r.DecodeJSON(&v); err == nil {
+		t.Fatal("expected error for body too large")
+	}
+}
+
+func TestRequest_DecodeJSON_BadHeader(t *testing.T) {
+	raw, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader("ok"))
+	raw.Header.Set("Content-Type", "text/plain")
 	r := NewRequest(raw)
-	if got := r.Header("X-Custom"); got != "hello" {
-		t.Fatalf("want hello, got %s", got)
+	var v any
+	if err := r.DecodeJSON(&v); err == nil {
+		t.Fatal("expected error for non-JSON content")
+	}
+}
+
+func TestRequest_DecodeJSON_UnsupportedContentType(t *testing.T) {
+	raw, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader(`{"x":1}`))
+	raw.Header.Set("Content-Type", "application/xml")
+	r := NewRequest(raw)
+	var v any
+	err := r.DecodeJSON(&v)
+	if err == nil {
+		t.Fatal("expected error for non-JSON content type")
+	}
+	if !strings.Contains(err.Error(), "unsupported content type") {
+		t.Fatalf("want unsupported content type, got: %v", err)
+	}
+}
+
+func TestRequest_HeaderAll(t *testing.T) {
+	raw, _ := http.NewRequest(http.MethodGet, "/", nil)
+	raw.Header.Add("X-Multi", "first")
+	raw.Header.Add("X-Multi", "second")
+	r := NewRequest(raw)
+	if got := r.Header("X-Multi"); got != "first" {
+		t.Fatalf("want first, got %s", got)
 	}
 }
 
@@ -63,6 +97,41 @@ func TestRequest_DecodeJSON_InvalidBody(t *testing.T) {
 	var v any
 	if err := r.DecodeJSON(&v); err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestRequest_DecodeJSON_EmptyBody(t *testing.T) {
+	r := newTestRequest(http.MethodPost, "/", strings.NewReader(""))
+	var v any
+	if err := r.DecodeJSON(&v); err == nil {
+		t.Fatal("expected error for empty body")
+	}
+}
+
+func TestRequest_DecodeJSON_CustomLimit(t *testing.T) {
+	body := strings.Repeat("a", 11)
+	r := newTestRequest(http.MethodPost, "/", strings.NewReader(body))
+	var v any
+	if err := r.DecodeJSON(&v, 10); err == nil {
+		t.Fatal("expected error for custom limit exceed")
+	}
+}
+
+func TestRequest_DecodeJSON_TrailingData(t *testing.T) {
+	body := `{"x":1}extra`
+	r := newTestRequest(http.MethodPost, "/", strings.NewReader(body))
+	var v map[string]int
+	if err := r.DecodeJSON(&v); err == nil {
+		t.Fatal("expected error for trailing data")
+	}
+}
+
+func TestRequest_DecodeJSON_EmptyBodyAfterJSON(t *testing.T) {
+	body := `{}` + strings.Repeat(" ", 10)
+	r := newTestRequest(http.MethodPost, "/", strings.NewReader(body))
+	var v map[string]any
+	if err := r.DecodeJSON(&v); err != nil {
+		t.Fatalf("expected success for valid empty object with whitespace, got: %v", err)
 	}
 }
 
@@ -229,8 +298,11 @@ func TestAdapt_NilResponse(t *testing.T) {
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	hf(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d", w.Code)
+	}
+	if w.Body.Len() != 0 {
+		t.Fatal("body should be empty for 204")
 	}
 }
 
@@ -243,6 +315,22 @@ func TestAdapt_HandlerError(t *testing.T) {
 	hf(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("want 500, got %d", w.Code)
+	}
+}
+
+func TestJSON_Response(t *testing.T) {
+	resp, err := JSON(http.StatusOK, map[string]string{"hello": "world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(resp.Headers.Get("Content-Type"), "application/json") {
+		t.Fatal("missing JSON content-type")
+	}
+	if string(resp.Body) != `{"hello":"world"}` {
+		t.Fatalf("unexpected body: %s", resp.Body)
 	}
 }
 

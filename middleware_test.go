@@ -1,6 +1,7 @@
 package ballo
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,7 +120,10 @@ func TestLogger_WithError(t *testing.T) {
 // ─── newRequestID ─────────────────────────────────────────────────────────────
 
 func TestNewRequestID_Format(t *testing.T) {
-	id := newRequestID()
+	id, err := newRequestID()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	// UUID v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (36 chars)
 	if len(id) != 36 {
 		t.Fatalf("want length 36, got %d: %s", len(id), id)
@@ -127,6 +131,64 @@ func TestNewRequestID_Format(t *testing.T) {
 	parts := strings.Split(id, "-")
 	if len(parts) != 5 {
 		t.Fatalf("want 5 parts, got %d", len(parts))
+	}
+}
+
+func TestRequestID_CryptoRandFailure(t *testing.T) {
+	orig := readRand
+	readRand = func([]byte) (int, error) { return 0, fmt.Errorf("rand fail") }
+	defer func() { readRand = orig }()
+
+	h := Chain(func(r *Request) (*Response, error) {
+		return NoContent()
+	}, RequestID())
+	resp, err := h(newTestRequest(http.MethodGet, "/", nil))
+	if err == nil {
+		t.Fatal("expected error from crypto/rand failure")
+	}
+	if resp != nil {
+		t.Fatal("expected nil response on request id failure")
+	}
+	if !strings.Contains(err.Error(), "rand fail") {
+		t.Fatalf("expected rand failure propagated, got: %v", err)
+	}
+}
+
+func TestRequestID_CryptoRandFailure_Now(t *testing.T) {
+	orig := readRand
+	readRand = func([]byte) (int, error) { return 15, nil }
+	defer func() { readRand = orig }()
+
+	h := Chain(func(r *Request) (*Response, error) {
+		return NoContent()
+	}, RequestID())
+	resp, err := h(newTestRequest(http.MethodGet, "/", nil))
+	if err == nil {
+		t.Fatal("expected error from short crypto/rand read")
+	}
+	if resp != nil {
+		t.Fatal("expected nil response on request id failure")
+	}
+}
+
+// TestRequestID_RandReadError_confirmsInjectability confirms readRand injection works for tests.
+func TestRequestID_RandReadError_confirmsInjectability(t *testing.T) {
+	orig := readRand
+	readRand = func([]byte) (int, error) { return 0, fmt.Errorf("injected rand error") }
+	defer func() { readRand = orig }()
+
+	h := Chain(func(r *Request) (*Response, error) {
+		return NoContent()
+	}, RequestID())
+	resp, err := h(newTestRequest(http.MethodGet, "/", nil))
+	if err == nil {
+		t.Fatal("expected error from injected rand failure")
+	}
+	if !strings.Contains(err.Error(), "injected rand error") {
+		t.Fatalf("expected injected error propagated, got: %v", err)
+	}
+	if resp != nil {
+		t.Fatal("expected nil response on rand error")
 	}
 }
 
